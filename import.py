@@ -50,7 +50,7 @@ filtered_df.columns # TODO: look into that more
 # Keep only WALKING and NaN (unassigned) segments
 filtered_df = filtered_df[
     (filtered_df["activity.topCandidate.type"] == "WALKING")
-    #| (filtered_df["activity.topCandidate.type"].isna()) # included to keep data with timelinePath, which does not get assigned an activity type
+    | (filtered_df["activity.topCandidate.type"].isna()) # included to keep data with timelinePath, which does not get assigned an activity type
 ]
 
 # %%
@@ -103,6 +103,24 @@ filtered_df['endLng'] = (filtered_df['timelinePath']
 filtered_df = filtered_df.dropna(axis='columns', how='all')
 
 
+# %% timeline_df separately
+timeline_df = filtered_df[~filtered_df["timelinePath"].isna()]
+timeline_df = timeline_df.dropna(axis='columns', how='all')
+
+all_points = []
+
+for json_string in timeline_df['timelinePath']:
+    for item in json_string:
+        if 'point' in item:
+            all_points.append(item['point'])
+
+# TODO: rename all_points now that it turns into the data frame for further processing
+all_points = pd.DataFrame({'point': all_points})
+all_points["timelineLat"] = all_points["point"].str.split('°, ').str[0].str.replace('°', '').astype(float)
+all_points["timelineLon"] = all_points["point"].str.split('°, ').str[1].str.replace('°', '').astype(float)
+
+# %% remove timelinePath parts from segement df
+filtered_df = filtered_df[filtered_df["timelinePath"].isna()]
 
 # %% Split latLng string into separate lat and lng columns
 
@@ -123,7 +141,7 @@ center_lng = (filtered_df['startLng'].mean() + filtered_df['endLng'].mean()) / 2
 # Create a map centered on your data
 m = folium.Map(location=[center_lat, center_lng], zoom_start=12)
 
-# Add lines for each row
+# Add lines for each segement
 for idx, row in filtered_df.iterrows():
     folium.PolyLine(
         locations=[
@@ -135,6 +153,17 @@ for idx, row in filtered_df.iterrows():
         opacity=0.6
     ).add_to(m)
 
+# add dots for each point
+for idx, row in all_points.iterrows():
+    folium.CircleMarker(
+        location=[row['timelineLat'], row['timelineLon']],
+        radius=3,
+        color='red',
+        fill=True,
+        fillColor='red'
+    ).add_to(m)
+
 # Save and display
-m.save('routes_map.html')
-m  # If in Jupyter, this will display inline
+m.save('/home/paul/routes_map.html')
+# m  # If in Jupyter, this will display inline
+# %%
