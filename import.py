@@ -5,6 +5,7 @@ import folium
 import datetime
 import pandas as pd
 import numpy as np
+from folium.plugins import HeatMap
 
 # Filepaths
 import_file = "/home/paul/Documents/Timeline/Timeline.json"
@@ -107,17 +108,19 @@ filtered_df = filtered_df.dropna(axis='columns', how='all')
 timeline_df = filtered_df[~filtered_df["timelinePath"].isna()]
 timeline_df = timeline_df.dropna(axis='columns', how='all')
 
-all_points = []
+timelinePoints = []
 
 for json_string in timeline_df['timelinePath']:
     for item in json_string:
         if 'point' in item:
-            all_points.append(item['point'])
+            timelinePoints.append(item['point'])
 
-# TODO: rename all_points now that it turns into the data frame for further processing
-all_points = pd.DataFrame({'point': all_points})
-all_points["timelineLat"] = all_points["point"].str.split('°, ').str[0].str.replace('°', '').astype(float)
-all_points["timelineLon"] = all_points["point"].str.split('°, ').str[1].str.replace('°', '').astype(float)
+# TODO: rename timelinePoints now that it turns into the data frame for further processing
+timelinePoints = pd.DataFrame({'point': timelinePoints})
+timelinePoints["timelineLat"] = timelinePoints["point"].str.split('°, ').str[0].str.replace('°', '').astype(float)
+timelinePoints["timelineLon"] = timelinePoints["point"].str.split('°, ').str[1].str.replace('°', '').astype(float)
+
+timelinePoints = timelinePoints[["timelineLat", "timelineLon"]]
 
 # %% remove timelinePath parts from segement df
 filtered_df = filtered_df[filtered_df["timelinePath"].isna()]
@@ -154,7 +157,7 @@ for idx, row in filtered_df.iterrows():
     ).add_to(m)
 
 # add dots for each point
-for idx, row in all_points.iterrows():
+for idx, row in timelinePoints.iterrows():
     folium.CircleMarker(
         location=[row['timelineLat'], row['timelineLon']],
         radius=3,
@@ -166,4 +169,11 @@ for idx, row in all_points.iterrows():
 # Save and display
 m.save('/home/paul/routes_map.html')
 # m  # If in Jupyter, this will display inline
+# %% Heatmap instead
+
+h = folium.Map(location=[center_lat, center_lng], zoom_start=12)
+
+HeatMap(timelinePoints).add_to(h)
+
+h.save('/home/paul/heat_map.html')
 # %%
