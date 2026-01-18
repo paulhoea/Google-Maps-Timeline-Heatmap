@@ -86,8 +86,11 @@ filtered_df = filtered_df[filtered_df["visit.hierarchyLevel"].isna()] # presence
 # %%
 steps_df["date"] = pd.to_datetime(steps_df["date"],utc=True)
 steps_df["day"] = steps_df["date"].dt.date
+steps_df["time"] = steps_df["date"].dt.hour
 
 steps_df = steps_df[(steps_df["date"] >= start_date) & (steps_df["date"] <= end_date)]
+steps_df = steps_df[(steps_df["time"] >= day_start) & (steps_df["time"] <= day_end)]
+
 
 steps_df["steps"] = pd.to_numeric(steps_df["steps"])
 steps_df = steps_df.groupby("day")["steps"].sum().reset_index(name="steps")
