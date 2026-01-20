@@ -11,6 +11,7 @@ import pandas as pd
 import numpy as np
 from folium.plugins import HeatMap
 from sklearn.neighbors import BallTree
+import matplotlib.pyplot as plt
 
 # Filepaths
 import_file = "/home/paul/Documents/Timeline/Timeline.json"
@@ -20,12 +21,12 @@ steps_file = "/home/paul/Documents/Timeline/StepsAppDataExport/activity-export-h
 # Filters
 day_start = 6
 day_end = 22
-# start_date = '2025-01-01'
-# end_date = '2025-12-31'
+start_date = '2025-01-01'
+end_date = '2025-12-31'
 # start_date = '2025-10-02T00:00:00' # LINZ
 # end_date = '2025-10-02T23:59:59'
-start_date = '2025-10-08T00:00:00'
-end_date = '2025-10-08T23:59:59'
+# start_date = '2025-10-08T00:00:00'
+# end_date = '2025-10-08T23:59:59'
 steps_treshold = 12000
 
 
@@ -87,18 +88,21 @@ filtered_df = filtered_df[filtered_df["visit.hierarchyLevel"].isna()] # presence
 steps_df["date"] = pd.to_datetime(steps_df["date"],utc=True)
 steps_df["day"] = steps_df["date"].dt.date
 steps_df["time"] = steps_df["date"].dt.hour
+steps_df["steps"] = pd.to_numeric(steps_df["steps"])
 
 steps_df = steps_df[(steps_df["date"] >= start_date) & (steps_df["date"] <= end_date)]
 steps_df = steps_df[(steps_df["time"] >= day_start) & (steps_df["time"] <= day_end)]
 
 
-steps_df["steps"] = pd.to_numeric(steps_df["steps"])
 steps_df = steps_df.groupby("day")["steps"].sum().reset_index(name="steps")
 
+# Preview whether the steps cutoff is chosen appropriately
+plt.hist(steps_df["steps"], bins=range(min(steps_df["steps"]), max(steps_df["steps"]) + 2000, 2000))
+plt.axvline(steps_treshold, color='k', linestyle='dashed', linewidth=1)
+plt.show() 
+
+# %% keep only relevant, as defined by steps threshold
 steps_df["relevant"] = steps_df["steps"] > steps_treshold
-
-
-
 
 
 
@@ -159,11 +163,10 @@ for i in range(len(keep_mask)):
 points_df = points_df[keep_mask].reset_index(drop=True)
 
 
-# %% Heuristic: remove certain areas
+# %% Heuristic: remove certain areas (TODO: extend to a bespoke district filter)
 
 filtered_df = filtered_df.query('not (startLat >= 48.205372 & startLat <= 48.216725 & startLon >= 16.337250 & startLon <= 16.362453)')
 points_df = points_df.query('not (timelineLat >= 48.205372 & timelineLat <= 48.216725 & timelineLon >= 16.337250 & timelineLon <= 16.362453)')
-
 
 
 #################
@@ -208,11 +211,12 @@ for idx, row in points_df.iterrows():
 # Save and display
 m.save('/home/paul/routes_map.html')
 # m  # If in Jupyter, this will display inline
-# %% Heatmap instead
+
+# Heatmap preview
 
 h = folium.Map(location=[center_lat, center_lng], zoom_start=12)
 
-HeatMap(timelinePoints).add_to(h)
+HeatMap(points_df[["timelineLat", "timelineLon"]]).add_to(h)
 
 h.save('/home/paul/heat_map.html')
 # %%
