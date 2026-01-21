@@ -47,6 +47,7 @@ df['endTimeTimezoneUtcOffsetMinutes'] = df['endTimeTimezoneUtcOffsetMinutes'].fi
 # covert to date
 df['startTime'] = pd.to_datetime(df['startTime'],utc=True)
 df['endTime'] = pd.to_datetime(df['endTime'],utc=True)
+df["date"] = df["startTime"].dt.date
 
 # incorporate the timezone offset
 df['startTime'] = df['startTime'] + pd.to_timedelta(df['startTimeTimezoneUtcOffsetMinutes'], unit='m')
@@ -85,25 +86,30 @@ filtered_df = filtered_df[filtered_df["visit.hierarchyLevel"].isna()] # presence
 ###################################
 
 # %%
-steps_df["date"] = pd.to_datetime(steps_df["date"],utc=True)
-steps_df["day"] = steps_df["date"].dt.date
-steps_df["time"] = steps_df["date"].dt.hour
+steps_df["date_utc"] = pd.to_datetime(steps_df["date"],utc=True)
+steps_df["time"] = steps_df["date_utc"].dt.hour
+steps_df["date"] = steps_df["date_utc"].dt.date
 steps_df["steps"] = pd.to_numeric(steps_df["steps"])
 
-steps_df = steps_df[(steps_df["date"] >= start_date) & (steps_df["date"] <= end_date)]
+steps_df = steps_df[(steps_df["date_utc"] >= start_date) & (steps_df["date_utc"] <= end_date)]
 steps_df = steps_df[(steps_df["time"] >= day_start) & (steps_df["time"] <= day_end)]
 
 
-steps_df = steps_df.groupby("day")["steps"].sum().reset_index(name="steps")
+steps_df = steps_df.groupby("date")["steps"].sum().reset_index(name="steps")
 
 # Preview whether the steps cutoff is chosen appropriately
 plt.hist(steps_df["steps"], bins=range(min(steps_df["steps"]), max(steps_df["steps"]) + 2000, 2000))
 plt.axvline(steps_treshold, color='k', linestyle='dashed', linewidth=1)
 plt.show() 
 
-# %% keep only relevant, as defined by steps threshold
+# keep only relevant, as defined by steps threshold
 steps_df["relevant"] = steps_df["steps"] > steps_treshold
+steps_df.drop(columns = ["steps"], axis = 1, inplace = True)
 
+filtered_df = filtered_df.merge(steps_df)
+
+filtered_df = filtered_df[filtered_df["relevant"] == True] # for further processing
+steps_df[steps_df["relevant"] == True] # to tune the heuristic
 
 
 ##################
@@ -114,23 +120,29 @@ steps_df["relevant"] = steps_df["steps"] > steps_treshold
 filtered_df = filtered_df.dropna(axis='columns', how='all')
 
 
-# %% timeline_df separately
+# %% timeline_df processed separately, into timelinePoints (df) for visualisation, and timelinePoints_separate (list) for (TODO) forthcoming testing
 timeline_df = filtered_df[~filtered_df["timelinePath"].isna()]
 timeline_df = timeline_df.dropna(axis='columns', how='all')
 
 timelinePoints = []
+timelinePoints_separate = []
 
 for json_string in timeline_df['timelinePath']:
+    timelinePoints_separate.append(pd.json_normalize(json_string)) # more detailed format (list of dfs) for a later test
     for item in json_string:
         if 'point' in item:
-            timelinePoints.append(item['point'])
+            timelinePoints.append(item['point']) # main visualisation dataframe, containing only coordinates with no regard for time dimension
 
-# TODO: rename timelinePoints now that it turns into the data frame for further processing
 points_df = pd.DataFrame({'point': timelinePoints})
 points_df["timelineLat"] = points_df["point"].str.split('°, ').str[0].str.replace('°', '').astype(float)
 points_df["timelineLon"] = points_df["point"].str.split('°, ').str[1].str.replace('°', '').astype(float)
 
 points_df = points_df[["timelineLat", "timelineLon"]]
+
+for item in timelinePoints_separate:
+    item["pointLat"] = item["point"].str.split('°, ').str[0].str.replace('°', '').astype(float)
+    item["pointLon"] = item["point"].str.split('°, ').str[1].str.replace('°', '').astype(float)
+    item = item.drop(columns = ["point"], axis=1, inplace=True)
 
 # %% remove timelinePath parts from segement df
 filtered_df = filtered_df[filtered_df["timelinePath"].isna()]
@@ -167,6 +179,42 @@ points_df = points_df[keep_mask].reset_index(drop=True)
 
 filtered_df = filtered_df.query('not (startLat >= 48.205372 & startLat <= 48.216725 & startLon >= 16.337250 & startLon <= 16.362453)')
 points_df = points_df.query('not (timelineLat >= 48.205372 & timelineLat <= 48.216725 & timelineLon >= 16.337250 & timelineLon <= 16.362453)')
+
+
+
+
+
+##################
+#### ANALYSIS ####
+##################
+
+# %% count left and right turns
+for item in timelinePoints_separate:
+    for i in range(2, len(item)):
+        # Get the three consecutive points
+        lat1, lon1 = item.loc[i-2, 'pointLat'], item.loc[i-2, 'pointLon']
+        lat2, lon2 = item.loc[i-1, 'pointLat'], item.loc[i-1, 'pointLon']
+        lat3, lon3 = item.loc[i, 'pointLat'], item.loc[i, 'pointLon']
+        
+        # Calculate the two vectors
+        dlat1 = lat2 - lat1
+        dlon1 = lon2 - lon1
+        dlat2 = lat3 - lat2
+        dlon2 = lon3 - lon2
+        
+        # Calculate cross product
+        cross_product = dlat1 * dlon2 - dlon1 * dlat2
+        
+        # Classify the turn
+        threshold = 1e-6 # this is arbitrary and can be done with other values, but this only affects what degree of movment gets counted as a turn, not turn ratios
+        if cross_product > threshold:
+            item.loc[i, 'turn'] = 'left'
+        elif cross_product < -threshold:
+            item.loc[i, 'turn'] = 'right'
+        else:
+            item.loc[i, 'turn'] = 'straight'
+
+pd.concat(timelinePoints_separate)["turn"].value_counts()
 
 
 #################
