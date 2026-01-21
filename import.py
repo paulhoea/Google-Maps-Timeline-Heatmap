@@ -12,6 +12,8 @@ import numpy as np
 from folium.plugins import HeatMap
 from sklearn.neighbors import BallTree
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import matplotlib.cm as cm
 
 # Filepaths
 import_file = "/home/paul/Documents/Timeline/Timeline.json"
@@ -109,7 +111,7 @@ steps_df.drop(columns = ["steps"], axis = 1, inplace = True)
 filtered_df = filtered_df.merge(steps_df)
 
 filtered_df = filtered_df[filtered_df["relevant"] == True] # for further processing
-steps_df[steps_df["relevant"] == True] # to tune the heuristic
+steps_df = steps_df[steps_df["relevant"] == True] # to tune the heuristic
 
 
 ##################
@@ -119,30 +121,23 @@ steps_df[steps_df["relevant"] == True] # to tune the heuristic
 # %% drop (TODO:) obsoltete and empty columns
 filtered_df = filtered_df.dropna(axis='columns', how='all')
 
-
 # %% timeline_df processed separately, into timelinePoints (df) for visualisation, and timelinePoints_separate (list) for (TODO) forthcoming testing
 timeline_df = filtered_df[~filtered_df["timelinePath"].isna()]
 timeline_df = timeline_df.dropna(axis='columns', how='all')
 
 timelinePoints = []
-timelinePoints_separate = []
 
 for json_string in timeline_df['timelinePath']:
-    timelinePoints_separate.append(pd.json_normalize(json_string)) # more detailed format (list of dfs) for a later test
-    for item in json_string:
-        if 'point' in item:
-            timelinePoints.append(item['point']) # main visualisation dataframe, containing only coordinates with no regard for time dimension
-
-points_df = pd.DataFrame({'point': timelinePoints})
-points_df["timelineLat"] = points_df["point"].str.split('°, ').str[0].str.replace('°', '').astype(float)
-points_df["timelineLon"] = points_df["point"].str.split('°, ').str[1].str.replace('°', '').astype(float)
-
-points_df = points_df[["timelineLat", "timelineLon"]]
-
-for item in timelinePoints_separate:
-    item["pointLat"] = item["point"].str.split('°, ').str[0].str.replace('°', '').astype(float)
-    item["pointLon"] = item["point"].str.split('°, ').str[1].str.replace('°', '').astype(float)
+    timelinePoints.append(pd.json_normalize(json_string)) # more detailed format (list of dfs) for a later test
+    
+for item in timelinePoints:
+    item["timelineLat"] = item["point"].str.split('°, ').str[0].str.replace('°', '').astype(float)
+    item["timelineLon"] = item["point"].str.split('°, ').str[1].str.replace('°', '').astype(float)
+    item["time"] = pd.to_datetime(item["time"],utc=True)
+    item["date"] = item["time"].dt.date
     item = item.drop(columns = ["point"], axis=1, inplace=True)
+
+points_df = pd.concat(timelinePoints)
 
 # %% remove timelinePath parts from segement df
 filtered_df = filtered_df[filtered_df["timelinePath"].isna()]
@@ -189,12 +184,12 @@ points_df = points_df.query('not (timelineLat >= 48.205372 & timelineLat <= 48.2
 ##################
 
 # %% count left and right turns
-for item in timelinePoints_separate:
+for item in timelinePoints:
     for i in range(2, len(item)):
         # Get the three consecutive points
-        lat1, lon1 = item.loc[i-2, 'pointLat'], item.loc[i-2, 'pointLon']
-        lat2, lon2 = item.loc[i-1, 'pointLat'], item.loc[i-1, 'pointLon']
-        lat3, lon3 = item.loc[i, 'pointLat'], item.loc[i, 'pointLon']
+        lat1, lon1 = item.loc[i-2, 'timelineLat'], item.loc[i-2, 'timelineLon']
+        lat2, lon2 = item.loc[i-1, 'timelineLat'], item.loc[i-1, 'timelineLon']
+        lat3, lon3 = item.loc[i, 'timelineLat'], item.loc[i, 'timelineLon']
         
         # Calculate the two vectors
         dlat1 = lat2 - lat1
@@ -214,7 +209,7 @@ for item in timelinePoints_separate:
         else:
             item.loc[i, 'turn'] = 'straight'
 
-pd.concat(timelinePoints_separate)["turn"].value_counts()
+pd.concat(timelinePoints)["turn"].value_counts()
 
 
 #################
@@ -246,12 +241,28 @@ for idx, row in filtered_df.iterrows():
         opacity=0.6
     ).add_to(m)
 
+# assign colours to each day
+min_date = points_df['date'].min()
+max_date = points_df['date'].max()
+days_from_min = (points_df['date'] - min_date).apply(lambda x: x.days)
+max_days = (max_date - min_date).days
+
+if max_days > 0:
+    normalized = days_from_min / max_days
+else:
+    normalized = np.zeros(len(points_df))
+
+# Use a colormap (hsv, rainbow, or jet are good for hue progression)
+cmap = plt.get_cmap('hsv')  # or 'rainbow', 'jet', 'turbo'
+points_df['colour'] = normalized.apply(lambda x: mcolors.to_hex(cmap(x)))
+
+
 # add dots for each point
 for idx, row in points_df.iterrows():
     folium.CircleMarker(
         location=[row['timelineLat'], row['timelineLon']],
         radius=3,
-        color='red',
+        color=row["colour"],
         fill=True,
         fillColor='red'
     ).add_to(m)
