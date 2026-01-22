@@ -7,18 +7,23 @@
 import json
 import folium
 import datetime
+import shapefile
+import shapely
 import pandas as pd
+import geopandas as gpd
 import numpy as np
 from folium.plugins import HeatMap
 from sklearn.neighbors import BallTree
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import matplotlib.cm as cm
+#import matplotlib.cm as cm
+
 
 # Filepaths
 import_file = "/home/paul/Documents/Timeline/Timeline.json"
 export_file = "/home/paul/Documents/Timeline/Table.csv"
 steps_file = "/home/paul/Documents/Timeline/StepsAppDataExport/activity-export-hourly.csv"
+district_file = "/home/paul/Documents/Timeline/Shapefiles/WFS GetFeature (SHP)-17.zip"
 
 # Filters
 day_start = 6
@@ -40,6 +45,9 @@ with open(import_file, 'r') as file:
 df = pd.json_normalize(data["semanticSegments"])
 steps_df = pd.read_csv(steps_file, delimiter=";")
 steps_df = steps_df.iloc[1:]
+
+districts_shp = shp = shapefile.Reader(district_file, encoding = "ISO8859-1")
+districts_gdf = gpd.read_file(district_file)
 
 # %% Handle date filtering
 # prepare for safe addition
@@ -172,12 +180,30 @@ points_df = points_df[keep_mask].reset_index(drop=True)
 
 # %% Heuristic: remove certain areas (TODO: extend to a bespoke district filter)
 
-filtered_df = filtered_df.query('not (startLat >= 48.205372 & startLat <= 48.216725 & startLon >= 16.337250 & startLon <= 16.362453)')
-points_df = points_df.query('not (timelineLat >= 48.205372 & timelineLat <= 48.216725 & timelineLon >= 16.337250 & timelineLon <= 16.362453)')
+# filtered_df = filtered_df.query('not (startLat >= 48.205372 & startLat <= 48.216725 & startLon >= 16.337250 & startLon <= 16.362453)')
+# points_df = points_df.query('not (timelineLat >= 48.205372 & timelineLat <= 48.216725 & timelineLon >= 16.337250 & timelineLon <= 16.362453)')
 
+points_gdf = gpd.GeoDataFrame(
+    points_df,
+    geometry=gpd.points_from_xy(points_df['timelineLon'], points_df['timelineLat']),
+    crs='EPSG:4326'  # WGS84 - standard lat/lon
+)
 
+# Reproject points to match the shapefile's CRS
+points_gdf = points_gdf.to_crs(districts_gdf.crs)
 
+# Spatial join to find which district each point is in
+result = gpd.sjoin(points_gdf, districts_gdf, how='left', predicate='within')
 
+# for i in range(0, len(districts_shp.shapes())):
+#     boundary = districts_shp.shapes()[i] # get a boundary polygon
+#     for item in points_df.iterrows():
+#         print(item[["timelineLat", "timelineLon"]])
+#         if Point(item[["timelineLat", "timelineLon"]]).within(shape(boundary)): # make a point and see if it's in the polygon
+#             item.loc[i, "district"] = districts_shp.records()[i][8] # Postleitzahl, e.g. 1100
+
+# for item in points_df.iterrows():
+#         print(item[["timelineLat", "timelineLon"]])
 
 ##################
 #### ANALYSIS ####
