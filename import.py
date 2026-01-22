@@ -7,8 +7,7 @@
 import json
 import folium
 import datetime
-import shapefile
-import shapely
+# import shapely
 import pandas as pd
 import geopandas as gpd
 import numpy as np
@@ -16,8 +15,10 @@ from folium.plugins import HeatMap
 from sklearn.neighbors import BallTree
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-#import matplotlib.cm as cm
 
+# Optional
+# if set can skip day identification heuristic via step counting, in which case steps app data is not needed
+relevant_days = None # format would be ["2025-12-29", "2025-01-01"]
 
 # Filepaths
 import_file = "/home/paul/Documents/Timeline/Timeline.json"
@@ -30,14 +31,9 @@ day_start = 6
 day_end = 22
 start_date = '2025-01-01'
 end_date = '2025-12-31'
-# start_date = '2025-10-02T00:00:00' # LINZ
-# end_date = '2025-10-02T23:59:59'
-# start_date = '2025-10-08T00:00:00'
-# end_date = '2025-10-08T23:59:59'
 steps_treshold = 12000
 districts_exclude = [1010, 1060, 1070, 1080, 1090]
 areas_exclude = [["48.206999", "48.219465", "16.397566", "16.415896"]]
-
 
 # %% Import JSON and convert to table
 with open(import_file, 'r') as file:
@@ -51,7 +47,6 @@ steps_df = pd.read_csv(steps_file, delimiter=";")
 steps_df = steps_df.iloc[1:]
 
 # load district outlines for use in filtering
-districts_shp = shp = shapefile.Reader(district_file, encoding = "ISO8859-1")
 districts_gdf = gpd.read_file(district_file)
 
 
@@ -75,7 +70,7 @@ df["date"] = df["startTime"].dt.date
 df['startTime'] = df['startTime'] + pd.to_timedelta(df['startTimeTimezoneUtcOffsetMinutes'], unit='m')
 df['endTime'] = df['endTime'] + pd.to_timedelta(df['endTimeTimezoneUtcOffsetMinutes'], unit='m')
 
-# filter date
+# filter relevant date range
 mask = (df['startTime'] >= start_date) & (df['startTime'] <= end_date)
 filtered_df = df.loc[mask]
 
@@ -110,32 +105,38 @@ filtered_df = filtered_df[filtered_df["visit.hierarchyLevel"].isna()] # presence
 ###################################
 
 # %%
-steps_df["date_utc"] = pd.to_datetime(steps_df["date"],utc=True)
-steps_df["time"] = steps_df["date_utc"].dt.hour
-steps_df["date"] = steps_df["date_utc"].dt.date
-steps_df["steps"] = pd.to_numeric(steps_df["steps"])
+if relevant_days is None: # use stepsapp data
+    steps_df["date_utc"] = pd.to_datetime(steps_df["date"],utc=True)
+    steps_df["time"] = steps_df["date_utc"].dt.hour
+    steps_df["date"] = steps_df["date_utc"].dt.date
+    steps_df["steps"] = pd.to_numeric(steps_df["steps"])
 
-steps_df = steps_df[(steps_df["date_utc"] >= start_date) & (steps_df["date_utc"] <= end_date)]
-steps_df = steps_df[(steps_df["time"] >= day_start) & (steps_df["time"] <= day_end)]
-
-
-steps_df = steps_df.groupby("date")["steps"].sum().reset_index(name="steps")
-
-# Preview whether the steps cutoff is chosen appropriately
-plt.hist(steps_df["steps"], bins=range(min(steps_df["steps"]), max(steps_df["steps"]) + 2000, 2000))
-plt.axvline(steps_treshold, color='k', linestyle='dashed', linewidth=1)
-plt.show() 
-
-# keep only relevant, as defined by steps threshold
-steps_df["relevant"] = steps_df["steps"] > steps_treshold
-steps_df.drop(columns = ["steps"], axis = 1, inplace = True)
-
-filtered_df = filtered_df.merge(steps_df)
-
-filtered_df = filtered_df[filtered_df["relevant"] == True] # for further processing
-steps_df = steps_df[steps_df["relevant"] == True] # not used later, but can be viewed to review the heuristic results
+    steps_df = steps_df[(steps_df["date_utc"] >= start_date) & (steps_df["date_utc"] <= end_date)]
+    steps_df = steps_df[(steps_df["time"] >= day_start) & (steps_df["time"] <= day_end)]
 
 
+    steps_df = steps_df.groupby("date")["steps"].sum().reset_index(name="steps")
+
+    # Preview whether the steps cutoff is chosen appropriately
+    plt.hist(steps_df["steps"], bins=range(min(steps_df["steps"]), max(steps_df["steps"]) + 2000, 2000))
+    plt.axvline(steps_treshold, color='k', linestyle='dashed', linewidth=1)
+    plt.show() 
+
+    # keep only relevant, as defined by steps threshold
+    steps_df["relevant"] = steps_df["steps"] > steps_treshold
+    steps_df.drop(columns = ["steps"], axis = 1, inplace = True)
+
+    filtered_df = filtered_df.merge(steps_df)
+
+    filtered_df = filtered_df[filtered_df["relevant"] == True] # for further processing
+    steps_df = steps_df[steps_df["relevant"] == True] # not used later, but can be viewed to review the heuristic results
+
+else: # use user-set dates
+    steps_df = pd.DataFrame({
+        'date': pd.date_range(start=start_date, end=end_date, freq='D')
+    })
+    steps_df['relevant'] = steps_df['date'].isin(pd.to_datetime(relevant_days))
+    filtered_df = filtered_df[filtered_df["relevant"] == True] # for further processing
 
 
 ##################
@@ -205,25 +206,55 @@ points_df = points_df[keep_mask].reset_index(drop=True)
 
 # %% Heuristic: remove selected districts
 
-points_gdf = gpd.GeoDataFrame(
+# convert points to GeoDataFrame
+points_df = gpd.GeoDataFrame(
     points_df,
     geometry=gpd.points_from_xy(points_df['timelineLon'], points_df['timelineLat']),
-    crs='EPSG:4326'  # WGS84 - standard lat/lon
+    crs='EPSG:4326'
 )
 
 # Reproject points to match the shapefile's CRS
-points_gdf = points_gdf.to_crs(districts_gdf.crs)
+points_df = points_df.to_crs(districts_gdf.crs)
 
 # Spatial join to find which district each point is in
-points_gdf = gpd.sjoin(points_gdf, districts_gdf, how='left', predicate='within')
+points_df = gpd.sjoin(points_df, districts_gdf, how='left', predicate='within')
 
-points_gdf = points_gdf[["time", "timelineLat", "timelineLon", "date", "timelineRadLat", "timelineRadLon", "DISTRICT_C"]]
+# unify format
+points_df = points_df[["time", "timelineLat", "timelineLon", "date", "timelineRadLat", "timelineRadLon", "DISTRICT_C"]]
+
+# apply filter
+points_df = points_df[~points_df["DISTRICT_C"].isin(districts_exclude)]
 
 
-# overwrites original points_df after re-unifying format
-points_df = points_gdf[~points_gdf["DISTRICT_C"].isin(districts_exclude)]
+# convert filtred df to GeoDataFrame
+start_points = gpd.GeoDataFrame(
+    filtered_df,
+    geometry=gpd.points_from_xy(filtered_df['startLon'], filtered_df['startLat']),
+    crs='EPSG:4326'
+).to_crs(districts_gdf.crs)
 
-# %% Heuristic: remove pre-defined areas districts
+end_points = gpd.GeoDataFrame(
+    filtered_df,
+    geometry=gpd.points_from_xy(filtered_df['endLon'], filtered_df['endLat']),
+    crs='EPSG:4326'
+).to_crs(districts_gdf.crs)
+
+# Spatial join for both
+start_joined = gpd.sjoin(start_points, districts_gdf[['geometry', 'DISTRICT_C']], 
+                         how='left', predicate='within', rsuffix='_start')
+end_joined = gpd.sjoin(end_points, districts_gdf[['geometry', 'DISTRICT_C']], 
+                       how='left', predicate='within', rsuffix='_end')
+
+# Combine the district information back into original df
+filtered_df['start_DISTRICT_C'] = start_joined['DISTRICT_C'].values
+filtered_df['end_DISTRICT_C'] = end_joined['DISTRICT_C'].values
+
+# apply filter
+filtered_df = filtered_df[~filtered_df["start_DISTRICT_C"].isin(districts_exclude)]
+filtered_df = filtered_df[~filtered_df["end_DISTRICT_C"].isin(districts_exclude)]
+
+
+# %% Heuristic: remove pre-defined areas
 
 # filtered_df = filtered_df.query('startLat >= ' + areas_exclude[0][0] + ' & startLat <= ' + areas_exclude[0][1] + ' & startLon >= ' + areas_exclude[0][2] + ' & startLon  <= ' + areas_exclude[0][3])
 # points_df = points_df.query('timelineLat >= ' + areas_exclude[0][0] + ' & timelineLat <= ' + areas_exclude[0][1] + ' & timelineLon >= ' + areas_exclude[0][2] + ' & timelineLon  <= ' + areas_exclude[0][3])
@@ -283,7 +314,7 @@ center_lat = (filtered_df['startLat'].mean() + filtered_df['endLat'].mean()) / 2
 center_lng = (filtered_df['startLon'].mean() + filtered_df['endLon'].mean()) / 2
 
 # Create a map centered on your data
-m = folium.Map(location=[center_lat, center_lng], zoom_start=12)
+m = folium.Map(location=[center_lat, center_lng], zoom_start=12) #, tiles="CartoDB positron")
 
 # Add lines for each segement
 for idx, row in filtered_df.iterrows():
@@ -294,7 +325,8 @@ for idx, row in filtered_df.iterrows():
         ],
         color='blue',
         weight=2,
-        opacity=0.6
+        opacity=0.6,
+        tooltip=row["date"]
     ).add_to(m)
 
 # assign colours to each day
@@ -320,7 +352,8 @@ for idx, row in points_df.iterrows():
         radius=3,
         color=row["colour"],
         fill=True,
-        fillColor='red'
+        fillColor='red',
+        tooltip=row["date"]
     ).add_to(m)
 
 # Save and display
