@@ -35,6 +35,8 @@ end_date = '2025-12-31'
 # start_date = '2025-10-08T00:00:00'
 # end_date = '2025-10-08T23:59:59'
 steps_treshold = 12000
+districts_exclude = [1010, 1060, 1070, 1080, 1090]
+areas_exclude = [["48.206999", "48.219465", "16.397566", "16.415896"]]
 
 
 # %% Import JSON and convert to table
@@ -43,11 +45,21 @@ with open(import_file, 'r') as file:
 
 # the semantic segments encode relevant parts of the data, the steps are imported from a separate app
 df = pd.json_normalize(data["semanticSegments"])
+
+# load steps data for use in filtering
 steps_df = pd.read_csv(steps_file, delimiter=";")
 steps_df = steps_df.iloc[1:]
 
+# load district outlines for use in filtering
 districts_shp = shp = shapefile.Reader(district_file, encoding = "ISO8859-1")
 districts_gdf = gpd.read_file(district_file)
+
+
+
+
+#####################################
+### DATE PROCESSING AND FILTERING ###
+#####################################
 
 # %% Handle date filtering
 # prepare for safe addition
@@ -91,6 +103,8 @@ filtered_df = filtered_df[
 filtered_df = filtered_df[filtered_df["visit.hierarchyLevel"].isna()] # presence of any visit.hierarchyLevel indicates a visit, thus not a travel. These are removed.
 
 
+
+
 ###################################
 ### RELEVANT DAY IDENTIFICATION ###
 ###################################
@@ -119,25 +133,37 @@ steps_df.drop(columns = ["steps"], axis = 1, inplace = True)
 filtered_df = filtered_df.merge(steps_df)
 
 filtered_df = filtered_df[filtered_df["relevant"] == True] # for further processing
-steps_df = steps_df[steps_df["relevant"] == True] # to tune the heuristic
+steps_df = steps_df[steps_df["relevant"] == True] # not used later, but can be viewed to review the heuristic results
+
+
 
 
 ##################
 ### PROCESSING ###
 ##################
 
-# %% drop (TODO:) obsoltete and empty columns
+# %% drop obsoltete and empty columns for easier viewing
 filtered_df = filtered_df.dropna(axis='columns', how='all')
 
 # %% timeline_df processed separately, into timelinePoints (df) for visualisation, and timelinePoints_separate (list) for (TODO) forthcoming testing
 timeline_df = filtered_df[~filtered_df["timelinePath"].isna()]
 timeline_df = timeline_df.dropna(axis='columns', how='all')
 
+# remove timelinePath parts from segement df
+filtered_df = filtered_df[filtered_df["timelinePath"].isna()]
+
+# split latLng string into separate lat and lng columns
+filtered_df[['startLat', 'startLon']] = filtered_df['activity.start.latLng'].str.replace('°', '').str.split(',', expand=True).astype(float)
+filtered_df[['endLat', 'endLon']] = filtered_df['activity.end.latLng'].str.replace('°', '').str.split(',', expand=True).astype(float)
+
+# further process timelinePoints data separated from main df
 timelinePoints = []
 
+# split timeline rows into list items
 for json_string in timeline_df['timelinePath']:
     timelinePoints.append(pd.json_normalize(json_string)) # more detailed format (list of dfs) for a later test
     
+# process list items into relevant columns within the list
 for item in timelinePoints:
     item["timelineLat"] = item["point"].str.split('°, ').str[0].str.replace('°', '').astype(float)
     item["timelineLon"] = item["point"].str.split('°, ').str[1].str.replace('°', '').astype(float)
@@ -145,14 +171,13 @@ for item in timelinePoints:
     item["date"] = item["time"].dt.date
     item = item.drop(columns = ["point"], axis=1, inplace=True)
 
+# concatonate list into single dataframe for visualisation
 points_df = pd.concat(timelinePoints)
 
-# %% remove timelinePath parts from segement df
-filtered_df = filtered_df[filtered_df["timelinePath"].isna()]
 
-# %% Split latLng string into separate lat and lng columns
-filtered_df[['startLat', 'startLon']] = filtered_df['activity.start.latLng'].str.replace('°', '').str.split(',', expand=True).astype(float)
-filtered_df[['endLat', 'endLon']] = filtered_df['activity.end.latLng'].str.replace('°', '').str.split(',', expand=True).astype(float)
+#########################
+### HEURISTIC FILTERS ###
+#########################
 
 # %% Heuristic: drop timelinePoints data if they are solitary, implying fast travel (e.g. public transport) being registered
 
@@ -178,10 +203,7 @@ for i in range(len(keep_mask)):
 points_df = points_df[keep_mask].reset_index(drop=True)
 
 
-# %% Heuristic: remove certain areas (TODO: extend to a bespoke district filter)
-
-# filtered_df = filtered_df.query('not (startLat >= 48.205372 & startLat <= 48.216725 & startLon >= 16.337250 & startLon <= 16.362453)')
-# points_df = points_df.query('not (timelineLat >= 48.205372 & timelineLat <= 48.216725 & timelineLon >= 16.337250 & timelineLon <= 16.362453)')
+# %% Heuristic: remove selected districts
 
 points_gdf = gpd.GeoDataFrame(
     points_df,
@@ -193,17 +215,25 @@ points_gdf = gpd.GeoDataFrame(
 points_gdf = points_gdf.to_crs(districts_gdf.crs)
 
 # Spatial join to find which district each point is in
-result = gpd.sjoin(points_gdf, districts_gdf, how='left', predicate='within')
+points_gdf = gpd.sjoin(points_gdf, districts_gdf, how='left', predicate='within')
 
-# for i in range(0, len(districts_shp.shapes())):
-#     boundary = districts_shp.shapes()[i] # get a boundary polygon
-#     for item in points_df.iterrows():
-#         print(item[["timelineLat", "timelineLon"]])
-#         if Point(item[["timelineLat", "timelineLon"]]).within(shape(boundary)): # make a point and see if it's in the polygon
-#             item.loc[i, "district"] = districts_shp.records()[i][8] # Postleitzahl, e.g. 1100
+points_gdf = points_gdf[["time", "timelineLat", "timelineLon", "date", "timelineRadLat", "timelineRadLon", "DISTRICT_C"]]
 
-# for item in points_df.iterrows():
-#         print(item[["timelineLat", "timelineLon"]])
+
+# overwrites original points_df after re-unifying format
+points_df = points_gdf[~points_gdf["DISTRICT_C"].isin(districts_exclude)]
+
+# %% Heuristic: remove pre-defined areas districts
+
+# filtered_df = filtered_df.query('startLat >= ' + areas_exclude[0][0] + ' & startLat <= ' + areas_exclude[0][1] + ' & startLon >= ' + areas_exclude[0][2] + ' & startLon  <= ' + areas_exclude[0][3])
+# points_df = points_df.query('timelineLat >= ' + areas_exclude[0][0] + ' & timelineLat <= ' + areas_exclude[0][1] + ' & timelineLon >= ' + areas_exclude[0][2] + ' & timelineLon  <= ' + areas_exclude[0][3])
+
+for item in areas_exclude:
+    filtered_df = filtered_df.query('not(startLat >= ' + item[0] + ' & startLat <= ' + item[1] + ' & startLon >= ' + item[2] + ' & startLon  <= ' + item[3] + ')') 
+    points_df = points_df.query('not(timelineLat >= ' + item[0] + ' & timelineLat <= ' + item[1] + ' & timelineLon >= ' + item[2] + ' & timelineLon  <= ' + item[3] + ')')
+
+
+
 
 ##################
 #### ANALYSIS ####
