@@ -124,7 +124,7 @@ if relevant_days is None: # use stepsapp data
 
     # keep only relevant, as defined by steps threshold
     steps_df["relevant"] = steps_df["steps"] > steps_treshold
-    steps_df.drop(columns = ["steps"], axis = 1, inplace = True)
+    steps_df.drop(columns = ["steps"], inplace = True) #axis = 1, - removed due to pandas update
 
     filtered_df = filtered_df.merge(steps_df)
 
@@ -170,7 +170,7 @@ for item in timelinePoints:
     item["timelineLon"] = item["point"].str.split('°, ').str[1].str.replace('°', '').astype(float)
     item["time"] = pd.to_datetime(item["time"],utc=True)
     item["date"] = item["time"].dt.date
-    item = item.drop(columns = ["point"], axis=1, inplace=True)
+    item = item.drop(columns = ["point"], inplace=True) # axis=1, 
 
 # concatonate list into single dataframe for visualisation
 points_df = pd.concat(timelinePoints)
