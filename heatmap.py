@@ -16,10 +16,6 @@ from sklearn.neighbors import BallTree
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
-# Optional
-# if set can skip day identification heuristic via step counting, in which case steps app data is not needed
-relevant_days = None # format would be ["2025-12-29", "2025-01-01"]
-
 # Filepaths
 import_file = "/home/paul/Documents/Timeline/Timeline.json"
 export_file = "/home/paul/Documents/Timeline/Table.csv"
@@ -34,17 +30,20 @@ end_date = '2025-12-31'
 steps_treshold = 12000
 districts_exclude = [1010, 1060, 1070, 1080, 1090]
 areas_exclude = [["48.206999", "48.219465", "16.397566", "16.415896"]]
+# Optional: skips day identification heuristic via step counting, instead sets manual dates
+relevant_days = None # format for manual entry: ["2025-12-29", "2025-01-01"]
 
 # %% Import JSON and convert to table
 with open(import_file, 'r') as file:
     data = json.load(file)
 
-# the semantic segments encode relevant parts of the data, the steps are imported from a separate app
+# the semantic segments encode relevant parts of the data, step counts are imported from a separate app
 df = pd.json_normalize(data["semanticSegments"])
 
 # load steps data for use in filtering
-steps_df = pd.read_csv(steps_file, delimiter=";")
-steps_df = steps_df.iloc[1:]
+if relevant_days is None:
+    steps_df = pd.read_csv(steps_file, delimiter=";")
+    steps_df = steps_df.iloc[1:]
 
 # load district outlines for use in filtering
 districts_gdf = gpd.read_file(district_file)
@@ -94,7 +93,7 @@ filtered_df = filtered_df[
 # filtered_df['endTime'] = filtered_df['endTime'].dt.tz_localize(None)
 # filtered_df.to_excel('/home/paul/test.xlsx', sheet_name='sheet1', index=False)
 
-# %% Keep only travel (i.e. remove any visits)
+# %% Keep only travel (i.e. remove any visits from semanticSegments)
 filtered_df = filtered_df[filtered_df["visit.hierarchyLevel"].isna()] # presence of any visit.hierarchyLevel indicates a visit, thus not a travel. These are removed.
 
 
@@ -131,7 +130,7 @@ if relevant_days is None: # use stepsapp data
     filtered_df = filtered_df[filtered_df["relevant"] == True] # for further processing
     steps_df = steps_df[steps_df["relevant"] == True] # not used later, but can be viewed to review the heuristic results
 
-else: # use user-set dates
+else: # use user-set dates from "filters" section in the beginning
     steps_df = pd.DataFrame({
         'date': pd.date_range(start=start_date, end=end_date, freq='D')
     })
@@ -151,11 +150,11 @@ timeline_df = filtered_df[~filtered_df["timelinePath"].isna()]
 timeline_df = timeline_df.dropna(axis='columns', how='all')
 
 # remove timelinePath parts from segement df
-filtered_df = filtered_df[filtered_df["timelinePath"].isna()]
+segments_df = filtered_df[filtered_df["timelinePath"].isna()]
 
 # split latLng string into separate lat and lng columns
-filtered_df[['startLat', 'startLon']] = filtered_df['activity.start.latLng'].str.replace('°', '').str.split(',', expand=True).astype(float)
-filtered_df[['endLat', 'endLon']] = filtered_df['activity.end.latLng'].str.replace('°', '').str.split(',', expand=True).astype(float)
+segments_df[['startLat', 'startLon']] = segments_df['activity.start.latLng'].str.replace('°', '').str.split(',', expand=True).astype(float)
+segments_df[['endLat', 'endLon']] = segments_df['activity.end.latLng'].str.replace('°', '').str.split(',', expand=True).astype(float)
 
 # further process timelinePoints data separated from main df
 timelinePoints = []
@@ -204,6 +203,8 @@ for i in range(len(keep_mask)):
 points_df = points_df[keep_mask].reset_index(drop=True)
 
 
+
+
 # %% Heuristic: remove selected districts
 
 # convert points to GeoDataFrame
@@ -225,42 +226,42 @@ points_df = points_df[["time", "timelineLat", "timelineLon", "date", "timelineRa
 # apply filter
 points_df = points_df[~points_df["DISTRICT_C"].isin(districts_exclude)]
 
-
-# convert filtred df to GeoDataFrame
+# similarly process segments_df:
+# convert segments df to GeoDataFrame
 start_points = gpd.GeoDataFrame(
-    filtered_df,
-    geometry=gpd.points_from_xy(filtered_df['startLon'], filtered_df['startLat']),
+    segments_df,
+    geometry=gpd.points_from_xy(segments_df['startLon'], segments_df['startLat']),
     crs='EPSG:4326'
 ).to_crs(districts_gdf.crs)
 
 end_points = gpd.GeoDataFrame(
-    filtered_df,
-    geometry=gpd.points_from_xy(filtered_df['endLon'], filtered_df['endLat']),
+    segments_df,
+    geometry=gpd.points_from_xy(segments_df['endLon'], segments_df['endLat']),
     crs='EPSG:4326'
 ).to_crs(districts_gdf.crs)
 
-# Spatial join for both
+# Separate out start or end coordinates matched with district info from the shapefile
 start_joined = gpd.sjoin(start_points, districts_gdf[['geometry', 'DISTRICT_C']], 
                          how='left', predicate='within', rsuffix='_start')
 end_joined = gpd.sjoin(end_points, districts_gdf[['geometry', 'DISTRICT_C']], 
                        how='left', predicate='within', rsuffix='_end')
 
 # Combine the district information back into original df
-filtered_df['start_DISTRICT_C'] = start_joined['DISTRICT_C'].values
-filtered_df['end_DISTRICT_C'] = end_joined['DISTRICT_C'].values
+segments_df['start_DISTRICT_C'] = start_joined['DISTRICT_C'].values
+segments_df['end_DISTRICT_C'] = end_joined['DISTRICT_C'].values
 
-# apply filter
-filtered_df = filtered_df[~filtered_df["start_DISTRICT_C"].isin(districts_exclude)]
-filtered_df = filtered_df[~filtered_df["end_DISTRICT_C"].isin(districts_exclude)]
+# remove districts if contained in start or end df
+segments_df = segments_df[~segments_df["start_DISTRICT_C"].isin(districts_exclude)]
+segments_df = segments_df[~segments_df["end_DISTRICT_C"].isin(districts_exclude)]
 
 
 # %% Heuristic: remove pre-defined areas
 
-# filtered_df = filtered_df.query('startLat >= ' + areas_exclude[0][0] + ' & startLat <= ' + areas_exclude[0][1] + ' & startLon >= ' + areas_exclude[0][2] + ' & startLon  <= ' + areas_exclude[0][3])
+# segments_df = segments_df.query('startLat >= ' + areas_exclude[0][0] + ' & startLat <= ' + areas_exclude[0][1] + ' & startLon >= ' + areas_exclude[0][2] + ' & startLon  <= ' + areas_exclude[0][3])
 # points_df = points_df.query('timelineLat >= ' + areas_exclude[0][0] + ' & timelineLat <= ' + areas_exclude[0][1] + ' & timelineLon >= ' + areas_exclude[0][2] + ' & timelineLon  <= ' + areas_exclude[0][3])
 
 for item in areas_exclude:
-    filtered_df = filtered_df.query('not(startLat >= ' + item[0] + ' & startLat <= ' + item[1] + ' & startLon >= ' + item[2] + ' & startLon  <= ' + item[3] + ')') 
+    segments_df = segments_df.query('not(startLat >= ' + item[0] + ' & startLat <= ' + item[1] + ' & startLon >= ' + item[2] + ' & startLon  <= ' + item[3] + ')') 
     points_df = points_df.query('not(timelineLat >= ' + item[0] + ' & timelineLat <= ' + item[1] + ' & timelineLon >= ' + item[2] + ' & timelineLon  <= ' + item[3] + ')')
 
 
@@ -305,19 +306,19 @@ pd.concat(timelinePoints)["turn"].value_counts()
 # %% Display result on map
 
 # drop non-Vienna coordinates
-filtered_df = filtered_df.query('startLat >= 48.092441 & startLat <= 48.349715 & startLon >= 16.136967 & startLon <= 16.627111')
+segments_df = segments_df.query('startLat >= 48.092441 & startLat <= 48.349715 & startLon >= 16.136967 & startLon <= 16.627111')
 points_df = points_df.query('timelineLat >= 48.092441 & timelineLat <= 48.349715 & timelineLon >= 16.136967 & timelineLon <= 16.627111')
 
 
 # Calculate the center point for the map
-center_lat = (filtered_df['startLat'].mean() + filtered_df['endLat'].mean()) / 2
-center_lng = (filtered_df['startLon'].mean() + filtered_df['endLon'].mean()) / 2
+center_lat = (segments_df['startLat'].mean() + segments_df['endLat'].mean()) / 2
+center_lng = (segments_df['startLon'].mean() + segments_df['endLon'].mean()) / 2
 
 # Create a map centered on your data
 m = folium.Map(location=[center_lat, center_lng], zoom_start=12) #, tiles="CartoDB positron")
 
 # Add lines for each segement
-for idx, row in filtered_df.iterrows():
+for idx, row in segments_df.iterrows():
     folium.PolyLine(
         locations=[
             [row['startLat'], row['startLon']], 
@@ -344,6 +345,17 @@ else:
 cmap = plt.get_cmap('hsv')  # or 'rainbow', 'jet', 'turbo'
 points_df['colour'] = normalized.apply(lambda x: mcolors.to_hex(cmap(x)))
 
+# district outlines
+folium.GeoJson(
+    districts_gdf.select_dtypes(exclude=["datetime64[ns]", "datetime64[ns, UTC]"]),
+    name="Districts",
+    style_function=lambda feature: {
+        "fillColor": "#ffa6a6",
+        "color": "#ff6161",
+        "weight": 1,
+        "fillOpacity": 0.4,
+    },
+).add_to(m)
 
 # add dots for each point
 for idx, row in points_df.iterrows():
@@ -363,6 +375,18 @@ m.save('/home/paul/routes_map.html')
 # Heatmap preview
 
 h = folium.Map(location=[center_lat, center_lng], zoom_start=12)
+
+# district outlines
+folium.GeoJson(
+    districts_gdf.select_dtypes(exclude=["datetime64[ns]", "datetime64[ns, UTC]"]),
+    name="Districts",
+    style_function=lambda feature: {
+        "fillColor": "#ffa6a6",
+        "color": "#ff6161",
+        "weight": 1,
+        "fillOpacity": 0.4,
+    },
+).add_to(h)
 
 HeatMap(points_df[["timelineLat", "timelineLon"]]).add_to(h)
 
